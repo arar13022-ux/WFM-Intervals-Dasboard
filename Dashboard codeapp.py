@@ -31,6 +31,9 @@ BREAK_COLS = ["First Short Break", "Lunch Break", "Last Short Break"]
 EDIT_COLS = BREAK_COLS + ["Exception", "Exception Minutes"]
 SLOTS = [f"{h:02d}:{m:02d}" for h in range(24) for m in (0, 30)]
 G96 = np.arange(96) * 30  # slot start minutes over 2 days (shift day + next day)
+UNIT_F = {"Minutes": 30, "Hours": 0.5, "FTE": 1}  # 1 FTE = 30 min in a 30-min interval
+UNIT_SFX = {"Minutes": "(min)", "Hours": "(hrs)", "FTE": "(FTE)"}
+UNIT_FMT = {"Minutes": "{:.0f}", "Hours": "{:.2f}", "FTE": "{:.2f}"}
 SHIFT_COLORS = ["#dbeafe", "#e0e7ff", "#ede9fe", "#fce7f3", "#ffedd5", "#fef9c3", "#d1fae5"]
 
 
@@ -303,6 +306,7 @@ with st.sidebar:
     lunch_min = st.select_slider("Lunch duration (min)", [30, 60], 30)
     short_min = st.select_slider("Short break duration (min)", [15, 30], 15)
     basis = st.radio("Heatmap/OT basis", ["Scheduled FTE", "Net Floor FTE"], help="Net = after breaks and exceptions")
+    unit = st.radio("Display unit", ["Minutes", "Hours", "FTE"], help="1 FTE = 30 minutes of staffed time per 30-min interval")
     late_rate = st.number_input("Late shift allowance, start 15:00-18:59 (EGP)", 0, 1000, 75, 5)
     night_rate = st.number_input("Overnight allowance, start 19:00+ (EGP)", 0, 1000, 150, 5)
 
@@ -314,6 +318,7 @@ def mask_fn(d, lobs=None):
 
 vecs = build_vectors(roster, breaks, DATES, lunch_min, short_min)
 di = DATES.index(sel_date)
+UF = UNIT_F[unit]
 tgt = tgt_for(targets, sel_lobs)
 a_day = agg(vecs, DATES, di, mask_fn)
 it = interval_table(a_day, tgt)
@@ -413,20 +418,27 @@ with tab2:
     else:
         st.success("No lunch-concurrency risk in low-coverage windows.")
 
-    sty = smap(it.style, status_color, subset=["Status"])
-    sty = smap(sty, lambda v: heat_color(v) if v != 0 else heat_color(0), subset=["Buffered FTE"])
+    num = ["Scheduled FTE", "On Lunch", "On Short Break", "Absent/Late", "Net Floor FTE", "Client Target", "Buffered FTE"]
+    ren = {c: f"{c.replace(' FTE', '')} {UNIT_SFX[unit]}" for c in num} if unit != "FTE" else {}
+    itd = it.copy()
+    itd[num] = (it[num] * UF).round(2)
+    itd = itd.rename(columns=ren)
+    ncols = [ren.get(c, c) for c in num]
+    bcol = ren.get("Buffered FTE", "Buffered FTE")
+    sty = smap(itd.style, status_color, subset=["Status"])
+    sty = smap(sty, heat_color, subset=[bcol]).format({c: UNIT_FMT[unit] for c in ncols})
     st.dataframe(sty, hide_index=True, height=520)
-    st.line_chart(it.set_index("Interval")[["Net Floor FTE", "Client Target"]])
+    st.line_chart(itd.set_index("Interval")[[ren.get("Net Floor FTE", "Net Floor FTE"), ren.get("Client Target", "Client Target")]])
 
     d1, d2 = st.columns(2)
-    d1.download_button("⬇️ Interval buffer report (CSV)", it.to_csv(index=False).encode("utf-8-sig"),
+    d1.download_button("⬇️ Interval buffer report (CSV)", itd.to_csv(index=False).encode("utf-8-sig"),
                        f"buffer_report_{sel_date}.csv", "text/csv")
     d2.download_button("⬇️ Break schedule & exceptions (CSV)", base.to_csv(index=False).encode("utf-8-sig"),
                        f"break_schedule_{sel_date}.csv", "text/csv")
 
 # ----------------------------------------------------------------------------- Module 3
 with tab3:
-    st.caption(f"Basis: **{basis}**. 🟩 surplus · 🟨 exact target · 🟥 understaffed · grey = closed")
+    st.caption(f"Basis: **{basis}** · Unit: **{unit}**. 🟩 surplus · 🟨 exact target · 🟥 understaffed · grey = closed")
     week, ot = {}, {}
     for j, d in enumerate(DATES):
         a = agg(vecs, DATES, j, mask_fn)
@@ -446,7 +458,8 @@ with tab3:
     k[3].metric("Largest deficit (FTE)", f"{deficit.max():.1f}")
 
     st.subheader("Weekly 30-min heatmap (FTE vs target)")
-    st.dataframe(smap(week.style, heat_color).format("{:+.1f}", na_rep="·"), height=620)
+    HFMT = "{:+.0f}" if unit == "Minutes" else "{:+.2f}"
+    st.dataframe(smap((week * UF).style, heat_color).format(HFMT, na_rep="·"), height=620)
 
     st.subheader(f"{sel_date}: heatmap by LOB")
     cols = {}
@@ -455,7 +468,7 @@ with tab3:
         t, f = tgt_for(targets, [lob]), basis_fte(a, basis)
         cols[lob] = np.where((t == 0) & (f == 0), np.nan, np.round(f - t, 2))
     lob_heat = pd.DataFrame(cols, index=SLOTS)
-    st.dataframe(smap(lob_heat.style, heat_color).format("{:+.1f}", na_rep="·"), height=400)
+    st.dataframe(smap((lob_heat * UF).style, heat_color).format(HFMT, na_rep="·"), height=400)
 
     c1, c2 = st.columns(2)
     c1.subheader("OT hours by day")
@@ -466,7 +479,7 @@ with tab3:
     c2.dataframe(ot_df[ot_df["Deficit"] > 0], hide_index=True)
 
     d1, d2 = st.columns(2)
-    d1.download_button("⬇️ Weekly interval matrix (CSV)", week.rename_axis("Interval").reset_index().to_csv(index=False)
+    d1.download_button("⬇️ Weekly interval matrix (CSV)", (week * UF).rename_axis("Interval").reset_index().to_csv(index=False)
                        .encode("utf-8-sig"), "weekly_interval_matrix.csv", "text/csv")
     d2.download_button("⬇️ OT analysis for date (CSV)", ot_df.to_csv(index=False).encode("utf-8-sig"),
                        f"ot_{sel_date}.csv", "text/csv")
