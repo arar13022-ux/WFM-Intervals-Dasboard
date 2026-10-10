@@ -373,13 +373,25 @@ with tab1:
 with tab2:
     st.subheader(f"Break schedule & exceptions - {sel_date}")
     base = breaks[sel_date]
-    ids = roster.loc[mask_fn(sel_date), "Employee ID"]
-    bview = base[base["Employee ID"].isin(ids)].reset_index(drop=True)
-    sig = hash((tuple(sel_lobs), tuple(sel_tls), tuple(sel_shifts)))
+    prev = DATES[di - 1]
+
+    def _rows(d, overnight_only=False):
+        b = breaks[d]
+        b = b[b["Employee ID"].isin(roster.loc[mask_fn(d), "Employee ID"])]
+        if overnight_only:  # shifts that run past midnight and so affect the early hours of the next date
+            b = b[b["Shift"].map(lambda x: (parse_shift(x) or (0, 0))[1] > 1440)]
+        return b.assign(**{"Shift Date": d})
+
+    parts = ([_rows(prev, True)] if prev != sel_date else []) + [_rows(sel_date)]
+    bview = pd.concat(parts).reset_index(drop=True)
+    bview = bview[["Shift Date", "Employee ID", "Name", "LOB", "TL", "Shift"] + EDIT_COLS]
+    st.caption(f"Rows tagged **{prev}** are overnight agents whose breaks after 00:00 fall on **{sel_date}**. "
+               f"Breaks after 00:00 for agents tagged **{sel_date}** show up on the next date.")
+    sig = hash((sel_date, tuple(sel_lobs), tuple(sel_tls), tuple(sel_shifts)))
     time_cfg = lambda lbl: st.column_config.TextColumn(lbl, validate=r"^([01]\d|2[0-3]):[0-5]\d$", help="HH:MM")
     edited = st.data_editor(
         bview, key=f"ed_{sel_date}_{sig}", hide_index=True, height=min(35 * len(bview) + 40, 420),
-        disabled=["Employee ID", "Name", "LOB", "TL", "Shift"],
+        disabled=["Shift Date", "Employee ID", "Name", "LOB", "TL", "Shift"],
         column_config={
             "First Short Break": time_cfg("First Short Break"), "Lunch Break": time_cfg("Lunch Break"),
             "Last Short Break": time_cfg("Last Short Break"),
@@ -394,13 +406,14 @@ with tab2:
         x["Exception Minutes"] = pd.to_numeric(x["Exception Minutes"], errors="coerce").fillna(0).astype(int)
         return x.fillna("").astype(str).reset_index(drop=True)
 
-    if not _norm(edited).equals(_norm(bview)):  # write edits back, then recompute everything
-        new = base.set_index("Employee ID")
-        ed = edited.set_index("Employee ID")
-        for c in EDIT_COLS:
-            new.loc[ed.index, c] = ed[c]
-        new["Exception Minutes"] = pd.to_numeric(new["Exception Minutes"], errors="coerce").fillna(0).astype(int)
-        st.session_state.breaks[sel_date] = new.reset_index()
+    if not _norm(edited).equals(_norm(bview)):  # write edits back to each row's own shift date, then recompute
+        for d, g in edited.groupby("Shift Date"):
+            new = breaks[d].set_index("Employee ID")
+            ed = g.set_index("Employee ID")
+            for c in EDIT_COLS:
+                new.loc[ed.index, c] = ed[c]
+            new["Exception Minutes"] = pd.to_numeric(new["Exception Minutes"], errors="coerce").fillna(0).astype(int)
+            st.session_state.breaks[d] = new.reset_index()
         st.rerun()
 
     st.subheader("Live buffer health")
