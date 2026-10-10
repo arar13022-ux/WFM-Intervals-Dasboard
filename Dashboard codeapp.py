@@ -534,6 +534,9 @@ with tab4:
         st.caption("Allowance applies to attended agents only; rates are configurable in the sidebar.")
         st.subheader("Exceptions logged")
         exc = ad[ad["Exception"] != "None"][["Employee ID", "Name", "LOB", "TL", "Shift", "Exception", "Exception Minutes"]]
-        st.dataframe(exc, hide_index=True) if len(exc) else st.success("No exceptions logged.")
+        if len(exc):
+            st.dataframe(exc, hide_index=True)
+        else:
+            st.success("No exceptions logged.")
         st.download_button("⬇️ Executive summary (CSV)", show.to_csv(index=False).encode("utf-8-sig"),
                            f"attendance_summary_{sel_date}.csv", "text/csv")
