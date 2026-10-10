@@ -418,17 +418,16 @@ with tab2:
     else:
         st.success("No lunch-concurrency risk in low-coverage windows.")
 
-    num = ["Scheduled FTE", "On Lunch", "On Short Break", "Absent/Late", "Net Floor FTE", "Client Target", "Buffered FTE"]
-    ren = {c: f"{c.replace(' FTE', '')} {UNIT_SFX[unit]}" for c in num} if unit != "FTE" else {}
+    fte_cols = ["Scheduled FTE", "On Lunch", "On Short Break", "Absent/Late", "Net Floor FTE", "Client Target"]
     itd = it.copy()
-    itd[num] = (it[num] * UF).round(2)
-    itd = itd.rename(columns=ren)
-    ncols = [ren.get(c, c) for c in num]
-    bcol = ren.get("Buffered FTE", "Buffered FTE")
+    itd["Buffered (min)"] = (it["Buffered FTE"] * 30).round(0)  # 1 FTE = 30 min per 30-min interval
+    itd = itd.drop(columns="Buffered FTE")[fte_cols + ["Buffered (min)", "Status"]].copy()
+    itd.insert(0, "Interval", it["Interval"])
     sty = smap(itd.style, status_color, subset=["Status"])
-    sty = smap(sty, heat_color, subset=[bcol]).format({c: UNIT_FMT[unit] for c in ncols})
+    sty = smap(sty, heat_color, subset=["Buffered (min)"])
+    sty = sty.format({**{c: "{:.2f}" for c in fte_cols}, "Buffered (min)": "{:+.0f}"})
     st.dataframe(sty, hide_index=True, height=520)
-    st.line_chart(itd.set_index("Interval")[[ren.get("Net Floor FTE", "Net Floor FTE"), ren.get("Client Target", "Client Target")]])
+    st.line_chart(itd.set_index("Interval")[["Net Floor FTE", "Client Target"]])
 
     d1, d2 = st.columns(2)
     d1.download_button("⬇️ Interval buffer report (CSV)", itd.to_csv(index=False).encode("utf-8-sig"),
